@@ -7,7 +7,7 @@
 #include "std_msgs/Float64MultiArray.h"
 #include "sensor_msgs/Imu.h"
 
-#define DEBUG_PRINT 0
+// #define DEBUG_PRINT 0
 
 using namespace std;
 
@@ -28,18 +28,18 @@ int main(int argc, char **argv) {
 
     string USB_Dev;
     int BAUDRATE;
-    bool LogIMU, LogAttitude, LogWaypoint, SendRC;
+    bool LogIMU, LogDebug, SendRC;
     // Get parameters
-    nh.param<string>("USB", USB_Dev, "/dev/ttyUSB0");
+    nh.param<string>("port", USB_Dev, "/dev/ttyACM0");
     nh.param<int>("baudrate", BAUDRATE, 115200);
     nh.param<bool>("LogIMU", LogIMU, false);
-    nh.param<bool>("LogWaypoint", LogWaypoint, false);
+    nh.param<bool>("LogDebug", LogDebug, false);
     nh.param<bool>("SendRC", SendRC, false);
     
     // Subscribers and publishers
     ros::Subscriber sub_joy_control  = nh.subscribe("joy_control", 1, joystick_command_callback);
     ros::Publisher imu_pub           = nh.advertise<sensor_msgs::Imu>("msp_imu", 10);
-    ros::Publisher waypoint_pub      = nh.advertise<std_msgs::Float64MultiArray>("msp_debug", 10);
+    ros::Publisher debug_pub         = nh.advertise<std_msgs::Float64MultiArray>("msp_debug", 10);
 
     const string device = USB_Dev;
     const size_t baudrate = BAUDRATE;
@@ -59,10 +59,6 @@ int main(int argc, char **argv) {
 
     // Define messages
     msp::msg::SetWp set_WP(fw_variant);
-    msp::msg::WayPoint waypoint(fw_variant);
-    msp::msg::Attitude attitude(fw_variant);
-    msp::msg::RawImu imu_msg(fw_variant);
-    msp::msg::SetRawRc RawRC(fw_variant);
 
     int count = 0;
     while(ros::ok()){
@@ -76,25 +72,34 @@ int main(int argc, char **argv) {
         // }
 
         // Request and publish debug data
-        if(LogWaypoint){
+        if(LogDebug){
+            msp::msg::WayPoint waypoint(fw_variant);
             if(client.sendMessage(waypoint) == 1) {
                 #ifdef DEBUG_PRINT
                 printf("Debug - msg1: %6.2f,     msg2: %6.2f,     msg3: %6.2f,     msg4: %6.2f,     msg5: %6.2f,     msg6: %6.2f\n", (double)waypoint.msg1, (double)waypoint.msg2, (double)waypoint.msg3, (double)waypoint.msg4, (double)waypoint.msg5, (double)waypoint.msg6);
                 #endif
                 std_msgs::Float64MultiArray waypoint_msg;
+                waypoint_msg.layout.dim.push_back(std_msgs::MultiArrayDimension());
+                waypoint_msg.layout.dim[0].label = "debug_data";
+                waypoint_msg.layout.dim[0].size = 6;
+                waypoint_msg.layout.dim[0].stride = 1;
+                waypoint_msg.layout.data_offset = 0;
                 waypoint_msg.data.push_back(waypoint.msg1);
                 waypoint_msg.data.push_back(waypoint.msg2);
                 waypoint_msg.data.push_back(waypoint.msg3);
                 waypoint_msg.data.push_back(waypoint.msg4);
                 waypoint_msg.data.push_back(waypoint.msg5);
                 waypoint_msg.data.push_back(waypoint.msg6);
-                waypoint_pub.publish(waypoint_msg);
+                debug_pub.publish(waypoint_msg);
             }
         }
         
         // Request and publish IMU data
         if(LogIMU){
+            msp::msg::Attitude attitude(fw_variant);
             sensor_msgs::Imu imu_ros_msg;
+            imu_ros_msg.header.stamp = ros::Time::now();
+            imu_ros_msg.header.frame_id = "msp_imu";
             bool attitude_received = false, imu_received = false;
             if(client.sendMessage(attitude) == 1){
                 // Convert Euler angles to quaternion
@@ -109,19 +114,21 @@ int main(int argc, char **argv) {
                 imu_ros_msg.orientation.y = cy * cr * sp + sy * sr * cp;
                 imu_ros_msg.orientation.z = sy * cr * cp - cy * sr * sp;
                 #ifdef DEBUG_PRINT
-                printf("Attitude - roll: %6.2f, pitch: %6.2f, yaw: %6.2f\n", attitude.roll, attitude.pitch, attitude.yaw);
+                printf("Attitude - roll: %6.2f, pitch: %6.2f, yaw: %6.2f\n", (float)(attitude.roll), (float)(attitude.pitch), (float)(attitude.yaw));
                 #endif
                 attitude_received = true;
             }
+            msp::msg::RawImu imu_msg(fw_variant);
             if(client.sendMessage(imu_msg) == 1) {
-                imu_ros_msg.linear_acceleration.x = imu_msg.acc[0];
-                imu_ros_msg.linear_acceleration.y = imu_msg.acc[1];
-                imu_ros_msg.linear_acceleration.z = imu_msg.acc[2];
-                imu_ros_msg.angular_velocity.x    = imu_msg.gyro[0];
-                imu_ros_msg.angular_velocity.y    = imu_msg.gyro[1];
-                imu_ros_msg.angular_velocity.z    = imu_msg.gyro[2];
+                msp::msg::ImuSI imu_SI = msp::msg::ImuSI(imu_msg, 2048.0, 1.0 / 4.096, 0.92f / 10.0f, 9.80665f);
+                imu_ros_msg.linear_acceleration.x = imu_SI.acc[0];
+                imu_ros_msg.linear_acceleration.y = imu_SI.acc[1];
+                imu_ros_msg.linear_acceleration.z = imu_SI.acc[2];
+                imu_ros_msg.angular_velocity.x    = imu_SI.gyro[0];
+                imu_ros_msg.angular_velocity.y    = imu_SI.gyro[1];
+                imu_ros_msg.angular_velocity.z    = imu_SI.gyro[2];
                 #ifdef DEBUG_PRINT
-                printf("IMU - acc_x: %6.2f, acc_y: %6.2f, acc_z: %6.2f, gyro_x: %6.2f, gyro_y: %6.2f, gyro_z: %6.2f\n", imu_msg.acc[0], imu_msg.acc[1], imu_msg.acc[2], imu_msg.gyro[0], imu_msg.gyro[1], imu_msg.gyro[2]);
+                printf("IMU - acc_x: %6.2f, acc_y: %6.2f, acc_z: %6.2f, gyro_x: %6.2f, gyro_y: %6.2f, gyro_z: %6.2f\n", (float)(imu_SI.acc[0]), (float)(imu_SI.acc[1]), (float)(imu_SI.acc[2]), (float)(imu_SI.gyro[0]), (float)(imu_SI.gyro[1]), (float)(imu_SI.gyro[2]));
                 #endif
                 imu_received = true;
             }
@@ -131,6 +138,7 @@ int main(int argc, char **argv) {
         }
 
         if(SendRC && joy_control_ready){
+            msp::msg::SetRawRc RawRC(fw_variant);
             RawRC.channels.push_back(joy_control.axes[0]*500 + 1500); // Roll
             RawRC.channels.push_back(joy_control.axes[1]*500 + 1500); // Pitch
             RawRC.channels.push_back(joy_control.axes[3]*1000);       // Throttle
@@ -150,13 +158,7 @@ int main(int argc, char **argv) {
                 #endif
             }
         }
-
-        // msp::msg::Attitude attitude(fw_variant);
-        // if(client.sendMessage(attitude) == 1)
-        //     cout << attitude;
-
         ros::spinOnce();
-
         loop_rate.sleep();
         count++;
     }

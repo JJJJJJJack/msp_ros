@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Reading msp -->
+  <node name="msp_ros" pkg="msp_ros" type="msp_ros" respawn="true" output="screen">
+    <param name="port" value="/dev/ttyACM0"/>
+    <param name="baudrate" value="115200"/>
+    <param name="LogIMU" value="false"/>
+    <param name="SendRC" value="false"/>
+    <param name="LogDebug" value="true"/>
+  </node>
+</launch>
